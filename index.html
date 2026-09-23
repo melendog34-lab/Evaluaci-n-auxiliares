@@ -1,4 +1,4 @@
-!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
@@ -731,35 +731,24 @@ function limpiarTodo(){
 }
 
 // ── REGISTRAR PRESENCIA AL CARGAR LA PÁGINA ────────────────────────────────────
+function actualizarPresencia(){
+  const nom = document.getElementById('inp-nom').value.trim();
+  const tur = document.getElementById('inp-tur').value;
+  if(nom && tur){
+    refConectados.child(E.sessionId).set({
+      nombre: nom,
+      turno: tur,
+      timestamp: firebase.database.ServerValue.TIMESTAMP,
+      estado: 'en-formulario'
+    });
+  }
+}
+
 window.addEventListener('load', ()=>{
   E.sessionId = genId();
-  // No registrar presencia aún, solo cuando se pone el nombre
-  document.getElementById('inp-nom').addEventListener('input', ()=>{
-    const nom = document.getElementById('inp-nom').value.trim();
-    const tur = document.getElementById('inp-tur').value;
-    if(nom && tur && !refConectados.child(E.sessionId).toString().includes('undefined')){
-      // Registrar presencia cuando hay nombre y turno
-      refConectados.child(E.sessionId).set({
-        nombre: nom,
-        turno: tur,
-        timestamp: firebase.database.ServerValue.TIMESTAMP,
-        estado: 'en-formulario'
-      });
-    }
-  });
-  
-  document.getElementById('inp-tur').addEventListener('change', ()=>{
-    const nom = document.getElementById('inp-nom').value.trim();
-    const tur = document.getElementById('inp-tur').value;
-    if(nom && tur){
-      refConectados.child(E.sessionId).set({
-        nombre: nom,
-        turno: tur,
-        timestamp: firebase.database.ServerValue.TIMESTAMP,
-        estado: 'en-formulario'
-      });
-    }
-  });
+  // Registrar presencia cuando hay nombre y turno
+  document.getElementById('inp-nom').addEventListener('input', actualizarPresencia);
+  document.getElementById('inp-tur').addEventListener('change', actualizarPresencia);
 });
 
 actualizarInfoPreguntas();
