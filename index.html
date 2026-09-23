@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
@@ -108,6 +108,13 @@ textarea{width:100%;padding:10px 12px;border:2px solid #D6E4F0;border-radius:8px
 .op-letra .letra{position:static}
 .op-letra input{margin-bottom:0;flex:1}
 .banco-estado{font-size:12px;color:#555;margin-bottom:1rem;line-height:1.6}
+.lista-conectados{background:#C8E6C9;border-radius:12px;padding:1rem;margin-bottom:1rem;
+  border-left:5px solid #1A6B2F}
+.lista-conectados h3{color:#1A6B2F;font-size:13px;margin-bottom:8px}
+.conectado-item{background:#fff;border-radius:8px;padding:8px 12px;margin-bottom:6px;
+  font-size:12px;font-weight:bold;color:#1A6B2F;display:flex;align-items:center;gap:6px}
+.punto-verde{width:8px;height:8px;background:#1A6B2F;border-radius:50%;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
 </head>
 <body>
@@ -188,15 +195,26 @@ textarea{width:100%;padding:10px 12px;border:2px solid #D6E4F0;border-radius:8px
     </div>
     <button class="btn-rojo" onclick="limpiarTodo()">🗑 Limpiar todo</button>
   </div>
+
+  <!-- LISTA DE CONECTADOS -->
+  <div id="seccion-conectados" style="display:none">
+    <div class="lista-conectados">
+      <h3>👥 Conectados ahora (<span id="cnt-conectados">0</span>)</h3>
+      <div id="lista-conectados"></div>
+    </div>
+  </div>
+
   <div class="stats" id="stats">
     <div class="stat"><div class="n" style="color:#2E75B6">0</div><div class="l">Total</div></div>
   </div>
   <div id="grid-ev">
     <div class="vacio">
       <div style="font-size:40px;margin-bottom:8px">⏳</div>
-      <div style="font-size:14px">Esperando evaluaciones...</div>
-      <div style="font-size:12px;margin-top:6px">Comparte este enlace con los auxiliares.<br>Aparecerán aquí cuando inicien.</div>
-    </div>
+      <div style="font-size:14px;font-weight:bold">Esperando evaluaciones...</div>
+      <div style="font-size:12px;margin-top:6px">
+        Comparte este enlace con los auxiliares.<br>
+        Aparecerán aquí cuando inicien desde cualquier celular.
+      </div></div>
   </div>
 </div>
 
@@ -257,14 +275,17 @@ firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 const refAlumnos = db.ref("evaluaciones");
 const refPreguntas = db.ref("preguntas");
+const refConectados = db.ref("conectados");
 
 // Estado de conexión
 db.ref(".info/connected").on("value", snap => {
   const el = document.getElementById("estado-conexion");
   if (snap.val()) {
-    el.className = "conectado"; el.textContent = "✅ Conectado en tiempo real";
+    el.className = "conectado"; 
+    el.textContent = "✅ Conectado en tiempo real";
   } else {
-    el.className = "desconectado"; el.textContent = "❌ Sin conexión";
+    el.className = "desconectado"; 
+    el.textContent = "❌ Sin conexión";
   }
 });
 
@@ -296,13 +317,18 @@ const PQ_DEFECTO = [
    e:"La anticipación es tu principal aporte. Reportar un faltante antes de que cause una parada distingue a un buen auxiliar."}
 ];
 
-let PQ = PQ_DEFECTO;       // banco activo que responden los auxiliares
-let UMBRAL = 6;            // correctas mínimas para aprobar (se recalcula al 75%)
-let bancoDraft = [];       // borrador editable del evaluador
+let PQ = PQ_DEFECTO;
+let UMBRAL = 6;
+let bancoDraft = [];
 
 const LETRAS = ['A','B','C','D'];
-let E = {nom:'',tur:'',act:0,sel:null,conf:false,resp:[],ini:null,uid:null,pantalla:'inicio'};
+let E = {nom:'',tur:'',act:0,sel:null,conf:false,resp:[],ini:null,uid:null,pantalla:'inicio',sessionId:null};
 let tabActiva = 'alumno';
+
+// ── GENERAR SESSION ID ÚNICO ──────────────────────────────────────────────────
+function genId(){
+  return Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+}
 
 // ── SINCRONIZAR BANCO ACTIVO EN TIEMPO REAL ───────────────────────────────────
 function actualizarInfoPreguntas(){
@@ -317,7 +343,6 @@ refPreguntas.on('value', snap=>{
   const data = snap.val();
   const custom = (data && Array.isArray(data.preguntas) && data.preguntas.length>=10)
     ? data.preguntas : null;
-  // No interrumpir a alguien que ya está respondiendo el quiz
   if(E.pantalla !== 'quiz'){
     PQ = custom || PQ_DEFECTO;
     actualizarInfoPreguntas();
@@ -326,7 +351,74 @@ refPreguntas.on('value', snap=>{
   if(est){
     est.innerHTML = custom
       ? `✅ Banco personalizado <b>activo</b>: ${custom.length} preguntas.`
-      : `ℹ️ Usando las <b>8 preguntas originales</b> (aún no hay banco personalizado guardado, o tiene menos de 10).`;
+      : `ℹ️ Usando las <b>8 preguntas originales</b> (aún no hay banco personalizado guardado).`;
+  }
+});
+
+// ── SISTEMA DE PRESENCIA EN TIEMPO REAL ────────────────────────────────────────
+function registrarPresencia(){
+  if(!E.sessionId) return;
+  
+  const refSesion = refConectados.child(E.sessionId);
+  
+  // Registrar presencia inicial
+  refSesion.set({
+    nombre: E.nom,
+    turno: E.tur,
+    timestamp: firebase.database.ServerValue.TIMESTAMP,
+    estado: 'en-formulario'
+  });
+  
+  // Heartbeat cada 5 segundos
+  const beatInterval = setInterval(()=>{
+    if(E.pantalla === 'inicio'){
+      refSesion.update({timestamp: firebase.database.ServerValue.TIMESTAMP});
+    } else {
+      // Si ya inició evaluación, mantener registro pero cambiar estado
+      refSesion.update({
+        estado: 'evaluando',
+        timestamp: firebase.database.ServerValue.TIMESTAMP
+      });
+    }
+  }, 5000);
+  
+  // Limpiar al salir
+  window.addEventListener('beforeunload', ()=>{
+    refSesion.remove();
+    clearInterval(beatInterval);
+  });
+}
+
+// ── ESCUCHAR CAMBIOS EN CONECTADOS ─────────────────────────────────────────────
+refConectados.on('value', snap=>{
+  const conectados = snap.val() || {};
+  const ahora = Date.now();
+  const TIMEOUT = 15000; // 15 segundos sin latido = desconectado
+  
+  const activos = Object.entries(conectados)
+    .filter(([_, data])=> data && (ahora - data.timestamp) < TIMEOUT)
+    .map(([id, data])=>({id, ...data}));
+  
+  // Limpiar desconectados
+  Object.entries(conectados).forEach(([id, data])=>{
+    if(data && (ahora - data.timestamp) >= TIMEOUT){
+      refConectados.child(id).remove();
+    }
+  });
+  
+  // Mostrar lista de conectados en Panel
+  if(tabActiva === 'evaluador' && activos.length > 0){
+    const seccion = document.getElementById('seccion-conectados');
+    seccion.style.display = 'block';
+    document.getElementById('cnt-conectados').textContent = activos.length;
+    
+    const lista = document.getElementById('lista-conectados');
+    lista.innerHTML = activos.map(a=>`
+      <div class="conectado-item">
+        <span class="punto-verde"></span>
+        <span>${a.nombre} <span style="opacity:0.7">(${a.turno})</span></span>
+      </div>
+    `).join('');
   }
 });
 
@@ -409,8 +501,6 @@ function restaurarPorDefecto(){
   });
 }
 
-function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
-
 // ── TABS ─────────────────────────────────────────────────────────────────────
 function irTab(t){
   tabActiva = t;
@@ -439,10 +529,20 @@ function chkInicio(){
 function iniciar(){
   E.nom = document.getElementById('inp-nom').value.trim();
   E.tur = document.getElementById('inp-tur').value;
+  E.sessionId = genId();
   E.act = 0; E.sel = null; E.conf = false; E.resp = [];
   E.ini = new Date().toISOString();
   E.uid = genId();
+  
+  // Registrar en evaluaciones
   guardar({estado:'en-curso', preguntaActual:0, respuestas:[], correctas:0, fin:null});
+  
+  // Actualizar presencia
+  refConectados.child(E.sessionId).update({
+    estado: 'evaluando',
+    timestamp: firebase.database.ServerValue.TIMESTAMP
+  });
+  
   mostrarPag('quiz');
   renderPregunta();
 }
@@ -509,7 +609,6 @@ function confirmar(){
   const bs = document.getElementById('btn-sig');
   bs.style.display = 'block';
   bs.textContent = E.act < PQ.length-1 ? 'SIGUIENTE PREGUNTA →' : 'VER RESULTADO →';
-  // Guardar progreso en Firebase
   const correctas = E.resp.filter(r=>r.correcta).length;
   guardar({estado:'en-curso', preguntaActual:E.act,
     respuestas:E.resp, correctas, fin:null});
@@ -530,7 +629,10 @@ function terminar(){
   const fin = new Date().toISOString();
   guardar({estado: aprobado?'aprobado':'reprobado',
     preguntaActual:PQ.length, respuestas:E.resp, correctas, fin});
-  // Render resultado
+  
+  // Limpiar de conectados
+  if(E.sessionId) refConectados.child(E.sessionId).remove();
+  
   document.getElementById('res-ico').textContent = aprobado?'🎉':'📚';
   document.getElementById('res-est').textContent = aprobado?'¡APROBADO!':'NO APROBADO';
   document.getElementById('res-pts').textContent = `${correctas} / ${PQ.length}`;
@@ -558,7 +660,7 @@ function terminar(){
 }
 
 function reiniciar(){
-  E = {nom:'',tur:'',act:0,sel:null,conf:false,resp:[],ini:null,uid:null,pantalla:'inicio'};
+  E = {nom:'',tur:'',act:0,sel:null,conf:false,resp:[],ini:null,uid:null,pantalla:'inicio',sessionId:null};
   document.getElementById('inp-nom').value = '';
   document.getElementById('inp-tur').value = '';
   document.getElementById('btn-ini').disabled = true;
@@ -625,7 +727,42 @@ function stat(n,l,c){
 function limpiarTodo(){
   if(!confirm('¿Limpiar todos los resultados?')) return;
   refAlumnos.remove();
+  refConectados.remove();
 }
+
+// ── REGISTRAR PRESENCIA AL CARGAR LA PÁGINA ────────────────────────────────────
+window.addEventListener('load', ()=>{
+  E.sessionId = genId();
+  // No registrar presencia aún, solo cuando se pone el nombre
+  document.getElementById('inp-nom').addEventListener('input', ()=>{
+    const nom = document.getElementById('inp-nom').value.trim();
+    const tur = document.getElementById('inp-tur').value;
+    if(nom && tur && !refConectados.child(E.sessionId).toString().includes('undefined')){
+      // Registrar presencia cuando hay nombre y turno
+      refConectados.child(E.sessionId).set({
+        nombre: nom,
+        turno: tur,
+        timestamp: firebase.database.ServerValue.TIMESTAMP,
+        estado: 'en-formulario'
+      });
+    }
+  });
+  
+  document.getElementById('inp-tur').addEventListener('change', ()=>{
+    const nom = document.getElementById('inp-nom').value.trim();
+    const tur = document.getElementById('inp-tur').value;
+    if(nom && tur){
+      refConectados.child(E.sessionId).set({
+        nombre: nom,
+        turno: tur,
+        timestamp: firebase.database.ServerValue.TIMESTAMP,
+        estado: 'en-formulario'
+      });
+    }
+  });
+});
+
+actualizarInfoPreguntas();
 </script>
 </body>
 </html>
